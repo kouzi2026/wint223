@@ -1,0 +1,80 @@
+name: GLM-5.3-Flash GitHub单文件全云端部署
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+env:
+  MODEL_PATH: /workspace/models/glm-5.3-flash
+  SGLANG_PORT: 30000
+  PAGES_FRONTEND_PATH: ./glm-web
+jobs:
+  full-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: 拉取仓库代码
+        uses: actions/checkout@v4
+      
+      - name: 预装系统依赖
+        run: |
+          sudo apt update && sudo apt install -y git-lfs nvidia-docker2
+          git lfs install
+      
+      - name: 从GitCode拉取FP8权重
+        run: |
+          mkdir -p /workspace/models
+          git clone --depth 1 https://ai.gitcode.com/zai-org/GLM-5.3-Flash $MODEL_PATH
+      
+      - name: 安装SGLang推理框架
+        run: pip install sglang==0.5.10
+      
+      - name: 启动GLM-5.3-Flash推理服务
+        run: |
+          nohup python3 -m sglang.launch_server \
+            --model-path $MODEL_PATH \
+            --host 0.0.0.0 --port $SGLANG_PORT \
+            --tp 1 --mem-fraction-static 0.7 \
+            --context-length 1048576 --dtype fp8 > glm-server.log 2>&1 &
+      
+      - name: 自动验证推理接口
+        run: |
+          sleep 30
+          curl http://localhost:$SGLANG_PORT/v1/chat/completions \
+            -H "Content-Type: application/json" \
+            -d '{"model": "glm-5.3-flash", "messages": [{"role": "user", "content": "GitHub单文件部署验证成功"}], "max_tokens": 128}'
+      
+      - name: 生成纯静态对话前端
+        run: |
+          mkdir -p $PAGES_FRONTEND_PATH
+          cat > $PAGES_FRONTEND_PATH/index.html << 'HTML'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>GLM-5.3-Flash GitHub云端对话</title>
+            <style>.chat{max-width:800px;margin:30px auto;} .msg{margin:10px 0;padding:12px;border-radius:8px;} .user{background:#e3f2fd;} .bot{background:#f5f5f5;}</style>
+          </head>
+          <body>
+            <div class="chat" id="chatBox"></div>
+            <textarea id="input" style="width:100%;height:80px;"></textarea>
+            <button onclick="send()">发送消息</button>
+            <script>
+              const API = "http://localhost:30000/v1/chat/completions";
+              async function send(){
+                const q = document.getElementById("input").value;
+                document.getElementById("chatBox").innerHTML += `<div class="msg user">${q}</div>`;
+                const res = await fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"glm-5.3-flash",messages:[{role:"user",content:q}],max_tokens:1024})});
+                const data = await res.json();
+                document.getElementById("chatBox").innerHTML += `<div class="msg bot">${data.choices[0].message.content}</div>`;
+              }
+            </script>
+          </body>
+          </html>
+          HTML
+      
+      - name: 部署对话前端到GitHub Pages
+        uses: actions/deploy-pages@v4
+        with:
+          folder: $PAGES_FRONTEND_PATH
